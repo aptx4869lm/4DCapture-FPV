@@ -1,4 +1,5 @@
-"""Scripts for extract frames from video"""
+## Scripts for extract frames from video 
+## A simplified version form Yin's script
 
 import argparse
 import os

@@ -1,4 +1,4 @@
-"""Scripts for extract frames from video"""
+
 
 import argparse
 import os
