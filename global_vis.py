@@ -61,8 +61,8 @@ def qvec2rotmat(qvec):
          2 * qvec[2] * qvec[3] + 2 * qvec[0] * qvec[1],
          1 - 2 * qvec[1]**2 - 2 * qvec[2]**2]])
 
-def main():
-    fitting_dir ='/home/miao/data/rylm/test'
+def main(fitting_dir):
+    # fitting_dir ='/home/miao/data/rylm/packed_data/miao_corridor_0/'
     vposer_ckpt_path = './vposer/'
     body_mesh_model = smplx.create('./models', 
                                        model_type='smplx',
@@ -87,9 +87,10 @@ def main():
     vis.create_window(width=1920, height=1080,visible=True)
     render_opt = vis.get_render_option().mesh_show_back_face=True
 
-    scene_name = 'BasementSittingBooth'
+    # scene_name = 'BasementSittingBooth'
     ## read scene mesh from file
-    scene = o3d.io.read_point_cloud(osp.join('/home/miao/data/rylm/sample1/xyz.ply'))
+    point_cloud=fitting_dir+'xyz.ply'
+    scene = o3d.io.read_point_cloud(osp.join(point_cloud))
     vis.add_geometry(scene)
     vis.update_geometry()
 
@@ -97,25 +98,25 @@ def main():
     ## dumb trans for dry run
 
     world_trans = np.eye(4)
-    tvec = [0,0,-8]
+    tvec = [0,0,-10]
     world_trans[:3, 3] = tvec
     ## read cam trans from file
-    lines = [line.rstrip('\n') for line in open('/home/miao/data/rylm/sample1/camerapose.txt')]
-
+    lines = [line.rstrip('\n') for line in open(fitting_dir+'camerapose.txt')]
+    # print(lines)
     # print(trans)
     body = o3d.geometry.TriangleMesh()
     vis.add_geometry(body)
 
     cv2.namedWindow('frame')
-    outrenderfolder = fitting_dir+'_render'
+    outrenderfolder = fitting_dir+'render'
     if not os.path.exists(outrenderfolder):
         os.makedirs(outrenderfolder)
 
     count = 0
-    for img_name in sorted(glob.glob('/home/miao/data/rylm/sample1/body_gen/*.pkl')):
+    for img_name in sorted(glob.glob(os.path.join(fitting_dir, 'smoothed_body/*.pkl'))):
         print('viz frame {}'.format(img_name))
 
-        imgid = int(img_name.split('/')[-1].replace('.pkl',''))-1
+        imgid = int(img_name.split('/')[-1].replace('.pkl','').replace('body_gen_',''))
         items = lines[imgid].split(' ')
 
         qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
@@ -186,4 +187,5 @@ def main():
 
 
 if __name__=='__main__':
-    main()
+    fitting_dir = sys.argv[1]
+    main(fitting_dir)

@@ -276,7 +276,7 @@ with FittingMonitor() as monitor:
     light_nodes = monitor.mv.viewer._create_raymond_lights()
 def main(fitting_dir):
 
-    # fitting_dir ='/home/miao/data/rylm/packed_data/miao_corridor_0/smoothed_body'
+    # fitting_dir ='/home/miao/data/rylm/segmented_data/miao_downtown_1-0/body_gen'
     vposer_ckpt_path = './vposer/'
     body_mesh_model = smplx.create('./models', 
                                        model_type='smplx',
@@ -296,7 +296,7 @@ def main(fitting_dir):
                                        )
     vposer, _ = load_vposer(vposer_ckpt_path, vp_model='snapshot')
     i =0
-    for body_file in sorted(glob.glob(fitting_dir+'/*.pkl')):
+    for body_file in sorted(glob.glob(fitting_dir+'/results/*/*.pkl')):
         print('viz frame {}'.format(body_file))
         ## get humam body params
         # if not os.path.exists(filename):
@@ -377,13 +377,13 @@ def main(fitting_dir):
         # img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
         imgname= body_file.split('/')[-1].replace('.pkl','').replace('body_gen_','')
         imgname=str(i)
-        output_dir = fitting_dir.replace('smoothed_body','smoothed_vis')
+        output_dir = fitting_dir.replace('body_gen','baseline_vis')
         # print(output_dir)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             print(output_dir)
         write_name=output_dir+'/'+imgname.zfill(4)+'.png'
-        img_dir = fitting_dir.replace('smoothed_body','images')
+        img_dir = fitting_dir.replace('body_gen','images')
         # print(img_dir)
         read_name=img_dir+'/'+imgname.zfill(4)+'.jpg'
         # print(read_name)
@@ -435,5 +435,5 @@ def main(fitting_dir):
         # count += 1
 
 if __name__=='__main__':
-    fitting_dir=sys.argv[1]
+    fitting_dir = sys.argv[1]
     main(fitting_dir)

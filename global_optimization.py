@@ -40,12 +40,14 @@ def body_params_parse(body_params_batch):
     x_body_T = body_params_batch['transl']
     x_body_R = body_params_batch['global_orient']
     x_body_beta = body_params_batch['betas']
-    x_body_pose = body_params_batch['pose_embedding']
+    x_body_pose = body_params_batch['body_pose']
     x_body_lh = body_params_batch['left_hand_pose']
     x_body_rh = body_params_batch['right_hand_pose']
+    x_body_CT = body_params_batch['camera_translation']
+    # print(x_body_CT)
     x_body = np.concatenate([x_body_T, x_body_R,
                              x_body_beta, x_body_pose,
-                             x_body_lh, x_body_rh], axis=-1)
+                             x_body_lh, x_body_rh, x_body_CT], axis=-1)
     return x_body
 
 
@@ -139,13 +141,16 @@ class FittingOP:
     def cal_loss(self, body_data_rotation):
         ### reconstruction loss
         loss_rec = self.weight_loss_rec*F.l1_loss(body_data_rotation, self.body_rotation_rec)
+
         body_rec = convert_to_3D_rot(self.body_rotation_rec)
         vposer_pose = body_rec[:,16:48]
         loss_vposer = self.weight_loss_vposer * torch.mean(vposer_pose**2)
         return loss_rec, loss_vposer
 
-    def smoothing_loss(self):
-        loss_smoothing = F.l1_loss(self.body_rotation_rec[0:-1,:],self.body_rotation_rec[1:,:])
+    def smoothing_loss(self,body_data_rotation):
+        # print(self.body_rotation_rec.shape)
+        loss_smoothing = torch.mean((self.body_rotation_rec[0:-1,:]-self.body_rotation_rec[1:,:])**2)
+        # print(self.body_rotation_rec[2,9:75])
         return loss_smoothing
 
 
@@ -156,18 +161,18 @@ class FittingOP:
 
         self.body_rotation_rec.data = body_data_rotation.clone()
 
-
+        body_data_rotation=body_data_rotation.detach()
         for ii in range(self.num_iter):
 
             self.optimizer.zero_grad()
             loss_rec, loss_vposer = self.cal_loss(body_data_rotation)
-            loss_smoothing = self.smoothing_loss()
-            loss = loss_rec + loss_vposer + loss_smoothing
-
+            loss_smoothing = self.smoothing_loss(body_data_rotation)
+            loss = loss_rec + loss_smoothing*1.5
+                        # print(self.body_rotation_rec[0,75:78])
             # if self.verbose:
-                # print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, total_loss={:f}'.format(
-                #                         ii, loss_rec.item(), loss_vposer.item(), 
-                #                         loss_smoothing.item(), loss.item()) )
+            print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, total_loss={:f}'.format(
+                                    ii, loss_rec.item(), loss_vposer.item(), 
+                                    loss_smoothing.item(), loss.item()) )
 
             loss.backward(retain_graph=True)
             self.optimizer.step()
@@ -179,9 +184,11 @@ class FittingOP:
 
     def save_result(self, body_rec, fit_path):
 
+
         if not os.path.exists(fit_path):
             os.makedirs(fit_path)
-
+            print(fit_path)
+        # print(body_rec.shape)
         body_param_list = HumanCVAE.body_params_encapsulate(body_rec)
         # print('[INFO] save results to: '+output_data_file)
         # for ii, body_param in enumerate(body_param_list):
@@ -196,7 +203,7 @@ if __name__=='__main__':
 
 
     body_path = sys.argv[1]
-    fit_path = sys.argv[2]
+    fit_path = body_path.replace('body_gen','smoothed_body')
 
     sample_name = 'sample1'
     fittingconfig={
@@ -207,8 +214,8 @@ if __name__=='__main__':
                 'scene_sdf_path': '/is/cluster/work/yzhang/PROX/scenes_sdf/'+sample_name,
                 'human_model_path': './models',
                 'vposer_ckpt_path': './vposer/',
-                'init_lr_h': 0.005,
-                'num_iter': 500,
+                'init_lr_h': 0.003,
+                'num_iter': 1000,
                 'batch_size': 1, 
                 'device': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                 'contact_id_folder': '/is/cluster/work/yzhang/PROX/body_segments',
@@ -224,28 +231,31 @@ if __name__=='__main__':
         'weight_collision' : 0.5
     }
 
-    gen_paths = glob.glob(os.path.join(body_path, '*/'))
+    body_gen_list = sorted(glob.glob(os.path.join(body_path, 'results/*/*.pkl')))
     
     
+    # print(gen_path)
+#for gen_path in gen_paths:
+    # body_gen_list = sorted(glob.glob(os.path.join(gen_path, '*.pkl')))
+    smplifyx_list=[]
+    for body_gen in body_gen_list:
+        input_data_file = body_gen
+        with open(input_data_file, 'rb') as f:
+            body_param_input = pickle.load(f)
+            # print(body_gen)
+        # print(body_param_input)
+        x =body_params_parse(body_param_input)
+        # print(x.shape)
+        smplifyx_list.append(x)
 
-    for gen_path in gen_paths:
-        body_gen_list = sorted(glob.glob(os.path.join(gen_path, '*.pkl')))
-        smplifyx_list=[]
-        for ii in range(len(body_gen_list)):
-            input_data_file = os.path.join(gen_path,'body_gen_{:06d}.pkl'.format(ii))
-            with open(input_data_file, 'rb') as f:
-                body_param_input = pickle.load(f)
-            x =body_params_parse(body_param_input['body'])
-            smplifyx_list.append(x)
+    smplifyx_data = np.vstack(smplifyx_list)
+    # print(smplifyx_data.shape)
+    body_gpu = torch.tensor(smplifyx_data, dtype=torch.float32).cuda()
+    num_body = smplifyx_data.shape[0]
+    fop = FittingOP(fittingconfig, lossconfig, num_body)
 
-        smplifyx_data = np.vstack(smplifyx_list)
-
-        body_gpu = torch.tensor(smplifyx_data, dtype=torch.float32).cuda()
-        num_body = smplifyx_data.shape[0]
-        fop = FittingOP(fittingconfig, lossconfig, num_body)
-
-        body_rec = fop.fitting(body_gpu)
-        out_path = fit_path+'/'+gen_path.split('/')[-2]
-        print(out_path)
-        fop.save_result(body_rec, out_path)
+    body_rec = fop.fitting(body_gpu)
+    out_path = fit_path
+    # print(out_path)
+    fop.save_result(body_rec, out_path)
         # break

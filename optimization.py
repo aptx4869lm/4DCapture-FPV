@@ -176,8 +176,10 @@ class FittingOP:
         # print(self.xhr_rec[:,0:12])
         # print(xh_prev[:,6:48])
         # print(xh_rec[:,48:])
-        # print(xh_rec[:,72:])
-        loss_smoothing = F.l1_loss(xh_prev[:,0:75], self.xhr_rec[:,0:75])
+        # # print(xh_rec[:,72:])
+        # print(xh_prev.shape)
+        # print(self.xhr_rec.shape)
+        loss_smoothing = F.l1_loss(xh_prev[:,9:51], self.xhr_rec[:,9:51])
         return loss_smoothing
 
     def fitting(self, input_data_file):
@@ -222,7 +224,7 @@ class FittingOP:
             self.optimizer.zero_grad()
             loss_rec, loss_vposer,_,_ = self.cal_loss(xhr)
             loss_smoothing = self.smoothing_loss(xh_prev)
-            loss = loss_rec+loss_vposer+loss_smoothing*1.5
+            loss = loss_rec+loss_vposer+loss_smoothing*5
             # if self.verbose:
             # print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, total_loss={:f}'.format(
             #                         ii, loss_rec.item(), loss_vposer.item(), 
@@ -325,21 +327,21 @@ if __name__=='__main__':
     }
     fop = FittingOP(fittingconfig, lossconfig)
 
-    body_gen_list = sorted(glob.glob(os.path.join(gen_path, '*.pkl')))
+    body_gen_list = sorted(glob.glob(os.path.join(gen_path, 'results/*/*.pkl')))
 
     freq=1
 
-    for ii in range(1,len(body_gen_list),freq):
+    for ii in range(0,len(body_gen_list),freq):
 
-        if ii ==1:
-            input_data_file = os.path.join(gen_path,'{:04d}.pkl'.format(ii))
-            output_data_file=os.path.join(fit_path,'motion_smoothing','{:04d}.pkl'.format(ii))
+        if ii ==0:
+            input_data_file = body_gen_list[ii]
+            output_data_file=os.path.join(fit_path,'smoothed_body','{:06d}.pkl'.format(ii))
             xh_rec = fop.fitting(input_data_file)
             fop.save_result(xh_rec, output_data_file)
             xh_prev = xh_rec.detach()
         else:
-            input_data_file = os.path.join(gen_path,'{:04d}.pkl'.format(ii))
-            output_data_file=os.path.join(fit_path,'motion_smoothing','{:04d}.pkl'.format(ii))
+            input_data_file = body_gen_list[ii]
+            output_data_file=os.path.join(fit_path,'smoothed_body','{:06d}.pkl'.format(ii))
             xh_rec = fop.fitting_smoothing(input_data_file,xh_prev)
             # xh_rec = fop.fitting(input_data_file)
             fop.save_result(xh_rec, output_data_file)
