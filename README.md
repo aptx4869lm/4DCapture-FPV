@@ -40,6 +40,7 @@ Run global_vis.py to transform the body mesh in pivot coordinate to world coordi
 python3 global_vis.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding_0-1/' False
 ```
 
+TODO: an interactive open3d viewer for debugging. Using calibrated camera parameters to re-run everything.
 ## Pack Video Outputs:
 Run pack_videosoutputs.py to generate video outputs.
 ```shell
