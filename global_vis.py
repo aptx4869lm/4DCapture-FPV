@@ -61,7 +61,7 @@ def qvec2rotmat(qvec):
          2 * qvec[2] * qvec[3] + 2 * qvec[0] * qvec[1],
          1 - 2 * qvec[1]**2 - 2 * qvec[2]**2]])
 
-def main(fitting_dir):
+def main(fitting_dir,flag):
     # fitting_dir ='/home/miao/data/rylm/packed_data/miao_corridor_0/'
     vposer_ckpt_path = './vposer/'
     body_mesh_model = smplx.create('./models', 
@@ -80,6 +80,12 @@ def main(fitting_dir):
                                        create_transl=False,
                                        batch_size=1
                                        )
+    if flag == 'True':
+        out = 'moving_render'
+        print('moving camrea')
+    else:
+        out = 'render'
+        print('fixed camera')
 
     vposer, _ = load_vposer(vposer_ckpt_path, vp_model='snapshot')
     ### setup visualization window
@@ -90,18 +96,29 @@ def main(fitting_dir):
     # scene_name = 'BasementSittingBooth'
     ## read scene mesh from file
     point_cloud=fitting_dir+'xyz.ply'
+    #'meshed_poisson.ply' for dense reconstruction
+    #TODO: make it argv input
     scene = o3d.io.read_point_cloud(osp.join(point_cloud))
     vis.add_geometry(scene)
     vis.update_geometry()
 
-    
-    ## dumb trans for dry run
 
-    world_trans = np.eye(4)
-    tvec = [0,0,-10]
-    world_trans[:3, 3] = tvec
     ## read cam trans from file
     lines = [line.rstrip('\n') for line in open(fitting_dir+'camerapose.txt')]
+
+    items = lines[0].split(' ')
+
+    qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
+    tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
+    romat = qvec2rotmat(qvec)
+
+    camera_lines = [line.rstrip('\n') for line in open(fitting_dir+'cameras.txt')]
+    camera_lines=camera_lines[-1:]
+
+    world_trans = np.eye(4)
+    world_trans[0:3, 0:3] =romat
+    world_trans[:3, 3] = tvec
+    world_trans = inv(world_trans)
     # print(lines)
     # print(trans)
     body = o3d.geometry.TriangleMesh()
@@ -127,7 +144,10 @@ def main(fitting_dir):
         body_trans[0:3, 0:3] =romat
         body_trans = inv(body_trans)
 
-        # print(body_trans)
+        if flag == 'True':
+            # print('moving camera')
+            world_trans=body_trans
+
         with open(img_name, 'rb') as f:
             param = pickle.load(f)
             # print(param)
@@ -188,4 +208,5 @@ def main(fitting_dir):
 
 if __name__=='__main__':
     fitting_dir = sys.argv[1]
-    main(fitting_dir)
+    flag = sys.argv[2]
+    main(fitting_dir,flag)
