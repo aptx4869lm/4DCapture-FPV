@@ -30,7 +30,7 @@ from torch.autograd import Variable
 import smplx
 from human_body_prior.tools.model_loader import load_vposer
 import ChamferDistancePytorch.dist_chamfer as ext
-
+from chamfer_python import distChamfer
 from cvae import HumanCVAE, ContinousRotReprDecoder
 from numpy.linalg import inv
 from MotionGeneration import LocalHumanDynamicsGRUNoise
@@ -104,13 +104,8 @@ def convert_to_3D_rot(x_batch):
 
 
 def verts_transform(verts_batch, cam_ext_batch):
-
-    print(verts_batch.size())
-    print(verts_batch[10,10,:])
     verts_batch_homo = F.pad(verts_batch, (0,1), mode='constant', value=1)
-    print(verts_batch_homo.size())
-    print(verts_batch_homo[10,10,:])
-    print(cam_ext_batch.size())  
+
     verts_batch_homo_transformed = torch.matmul(verts_batch_homo,
                                                cam_ext_batch.permute(0,2,1))
 
@@ -158,16 +153,19 @@ class FittingOP:
         self.s_verts_batch = torch.tensor(scene_verts, dtype=torch.float32, device=self.device).unsqueeze(0)
         self.s_verts_batch = self.s_verts_batch.repeat(self.batch_size, 1,1)
         # self.camera_ext = extract_ext(self.camera_path)
+        # scale=1.0
+        self.scale = Variable(torch.tensor(2.0).to(self.device),requires_grad=True)
 
+        # print(self.scale)
         self.body_rotation_rec = Variable(torch.randn(num_body,75).to(self.device), requires_grad=True)
-        self.optimizer = optim.Adam([self.body_rotation_rec], lr=self.init_lr_h)
+        self.optimizer = optim.Adam([self.body_rotation_rec,self.scale], lr=self.init_lr_h)
 
 
     def extract_ext(self,body_data):
         lines = [line.rstrip('\n') for line in open(self.camera_path)]
         cam_ext_list=[]
         cam_transl_batch=body_data[:,-3:].detach().cpu().numpy().squeeze()
-        print(cam_transl_batch.shape)
+
         num=len(lines)
         for i in range(num):
             line = lines[i]
@@ -181,7 +179,7 @@ class FittingOP:
             cam_ext[0:3, 0:3] =romat
             cam_ext = inv(cam_ext)
             camera_pose = np.eye(4)
-            camera_transl = cam_transl_batch[i,:]
+            camera_transl = cam_transl_batch[i,:]*self.scale.detach().cpu().numpy().squeeze()
             camera_pose[:3, 3] = camera_transl
             cam_ext = np.matmul(cam_ext,(camera_pose))
             cam_ext = torch.tensor(cam_ext, dtype=torch.float32).cuda()
@@ -193,7 +191,7 @@ class FittingOP:
         ### reconstruction loss
         cam_ext_list=self.extract_ext(body_data_rotation)     
         cam_ext_batch = torch.stack(cam_ext_list, dim=0)  
-        print(cam_ext_batch.size())
+
         loss_rec = self.weight_loss_rec*F.l1_loss(body_data_rotation, self.body_rotation_rec)
 
         body_rec = convert_to_3D_rot(self.body_rotation_rec)
@@ -201,10 +199,10 @@ class FittingOP:
         loss_vposer = self.weight_loss_vposer * torch.mean(vposer_pose**2)
 
         body_param_rec = HumanCVAE.body_params_encapsulate_batch(body_rec)
-        print(body_param_rec['body_pose_vp'].size())
+
         joint_rot_batch = self.vposer.decode(body_param_rec['body_pose_vp'], 
                                            output_type='aa').view(self.batch_size, -1)
-        print(joint_rot_batch.size())
+
         body_param_ = {}
         for key in body_param_rec.keys():
             if key in ['body_pose_vp']:
@@ -216,6 +214,7 @@ class FittingOP:
                                               body_pose=joint_rot_batch,
                                               **body_param_)
         body_verts_batch = smplx_output.vertices #[b, 10475,3]
+        body_verts_batch = body_verts_batch*self.scale
         body_verts_batch = verts_transform(body_verts_batch, cam_ext_batch)
 
         vid, fid = get_contact_id(body_segments_folder=self.contact_id_folder,
@@ -223,17 +222,11 @@ class FittingOP:
         body_verts_contact_batch = body_verts_batch[:, vid, :]
 
         dist_chamfer_contact = ext.chamferDist()
-        print(body_verts_contact_batch.contiguous())
-        print(self.s_verts_batch.contiguous())
         contact_dist, _ = dist_chamfer_contact(body_verts_contact_batch.contiguous(), 
                                                 self.s_verts_batch.contiguous())
-        print(contact_dist)
         loss_contact = self.weight_contact * torch.mean(torch.sqrt(contact_dist+1e-4)/(torch.sqrt(contact_dist+1e-4)+1.0))  
-        print(loss_contact)
 
-
-
-        return loss_rec, loss_vposer
+        return loss_rec, loss_vposer, loss_contact
 
     def smoothing_loss(self,body_data_rotation):
         # print(self.body_rotation_rec.shape)
@@ -248,34 +241,36 @@ class FittingOP:
         self.body_rotation_rec.data = body_data_rotation.clone()
 
         body_data_rotation=body_data_rotation.detach()
+
         for ii in range(self.num_iter):
 
             self.optimizer.zero_grad()
-            loss_rec, loss_vposer = self.cal_loss(body_data_rotation)
+            loss_rec, loss_vposer, loss_contact = self.cal_loss(body_data_rotation)
             loss_smoothing = self.smoothing_loss(body_data_rotation)
-            loss = loss_rec + loss_smoothing*1.5
+
+            loss = loss_contact*0.1 + loss_smoothing + loss_rec
                         # print(self.body_rotation_rec[0,75:78])
             # if self.verbose:
             print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, total_loss={:f}'.format(
                                     ii, loss_rec.item(), loss_vposer.item(), 
                                     loss_smoothing.item(), loss.item()) )
 
-            loss.backward(retain_graph=True)
+            loss.backward(retain_graph=False)
             self.optimizer.step()
 
         print('[INFO][fitting] fitting finish, returning optimal value')
         body_rec =  convert_to_3D_rot(self.body_rotation_rec)
+        print(self.scale)
+        return body_rec, self.scale.detach().cpu().numpy().squeeze()
 
-        return body_rec
-
-    def save_result(self, body_rec, fit_path):
+    def save_result(self, body_rec, scale, fit_path):
 
 
         if not os.path.exists(fit_path):
             os.makedirs(fit_path)
             print(fit_path)
         # print(body_rec.shape)
-        body_param_list = HumanCVAE.body_params_encapsulate(body_rec)
+        body_param_list = HumanCVAE.body_params_encapsulate(body_rec, scale)
         # print('[INFO] save results to: '+output_data_file)
         # for ii, body_param in enumerate(body_param_list):
 
@@ -300,8 +295,8 @@ if __name__=='__main__':
                 'camera_path': '/home/miao/data/rylm/segmented_data/'+sample_name+'/camerapose.txt',
                 'human_model_path': './models',
                 'vposer_ckpt_path': './vposer/',
-                'init_lr_h': 0.003,
-                'num_iter': 1,
+                'init_lr_h': 0.01,
+                'num_iter': 10,
                 'batch_size': 1, 
                 'device': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                 'contact_id_folder':  '/home/miao/data/rylm/body_segments',
@@ -340,8 +335,8 @@ if __name__=='__main__':
     num_body = smplifyx_data.shape[0]
     fop = FittingOP(fittingconfig, lossconfig, num_body)
 
-    body_rec = fop.fitting(body_gpu)
+    body_rec,scale = fop.fitting(body_gpu)
     out_path = fit_path
     # print(out_path)
-    fop.save_result(body_rec, out_path)
+    fop.save_result(body_rec, scale, out_path)
         # break

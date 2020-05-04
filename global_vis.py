@@ -80,28 +80,22 @@ def main(fitting_dir,flag):
                                        create_transl=False,
                                        batch_size=1
                                        )
-    if flag == 'True':
-        out = 'moving_render'
-        print('moving camrea')
-    else:
-        out = 'render'
-        print('fixed camera')
 
     vposer, _ = load_vposer(vposer_ckpt_path, vp_model='snapshot')
     ### setup visualization window
     vis = o3d.visualization.Visualizer()
-    vis.create_window(width=1920, height=1080,visible=True)
+    vis.create_window(width=1280, height=720,visible=True)
     render_opt = vis.get_render_option().mesh_show_back_face=True
 
     # scene_name = 'BasementSittingBooth'
     ## read scene mesh from file
-    point_cloud=fitting_dir+'xyz.ply'
-    #'meshed_poisson.ply' for dense reconstruction
-    #TODO: make it argv input
+    point_cloud=fitting_dir+'meshed-poisson.ply'
     scene = o3d.io.read_point_cloud(osp.join(point_cloud))
     vis.add_geometry(scene)
     vis.update_geometry()
-
+    print(flag)
+    
+    ## dumb trans for dry run
 
     ## read cam trans from file
     lines = [line.rstrip('\n') for line in open(fitting_dir+'camerapose.txt')]
@@ -125,17 +119,26 @@ def main(fitting_dir,flag):
     vis.add_geometry(body)
 
     cv2.namedWindow('frame')
-    outrenderfolder = fitting_dir+'render'
+
+    if flag == 'True':
+        out = 'moving_render'
+        print('moving camrea')
+    else:
+        out = 'render'
+        print('fixed camera')
+
+    outrenderfolder = fitting_dir+out
     if not os.path.exists(outrenderfolder):
         os.makedirs(outrenderfolder)
 
     count = 0
     for img_name in sorted(glob.glob(os.path.join(fitting_dir, 'smoothed_body/*.pkl'))):
+    # for img_name in sorted(glob.glob((fitting_dir+ 'body_gen/results/*/*.pkl'))):
         print('viz frame {}'.format(img_name))
 
         imgid = int(img_name.split('/')[-1].replace('.pkl','').replace('body_gen_',''))
-        items = lines[imgid].split(' ')
-
+        items = lines[count].split(' ')
+        # img_name = '/home/miao/data/rylm/segmented_data/miao_mainbuilding_0-1/smoothed_body/body_gen_000299.pkl'
         qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
         tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
         romat = qvec2rotmat(qvec)
@@ -143,22 +146,23 @@ def main(fitting_dir,flag):
         body_trans[:3, 3] = tvec
         body_trans[0:3, 0:3] =romat
         body_trans = inv(body_trans)
-
+        # print(body_trans)
         if flag == 'True':
             # print('moving camera')
             world_trans=body_trans
-
+        # print(body_trans)
         with open(img_name, 'rb') as f:
             param = pickle.load(f)
             # print(param)
             pose_embedding= param['body_pose']
             camera_transl = param['camera_translation']
+            scale = param['scale']
+            
 
-
+        camera_pose = np.eye(4)
         camera_transl = camera_transl.squeeze()
         # camera_transl[0] *=-1.0
-        camera_pose = np.eye(4)
-        camera_pose[:3, 3] = camera_transl
+        camera_pose[:3, 3] = camera_transl*scale
         # print(inv(camera_pose))
         body_trans = np.matmul(body_trans,(camera_pose))
         # print(camera_transl)
@@ -175,7 +179,7 @@ def main(fitting_dir,flag):
         # print(body_dict)
         model_output = body_mesh_model(return_verts=True, **body_dict)
         body_verts_np = model_output.vertices.detach().cpu().numpy().squeeze()
-
+        body_verts_np = body_verts_np*scale
         body.vertices = o3d.utility.Vector3dVector(body_verts_np)
         body.triangles = o3d.utility.Vector3iVector(body_mesh_model.faces)
         body.vertex_normals = o3d.utility.Vector3dVector([])
@@ -189,7 +193,9 @@ def main(fitting_dir,flag):
         ctr = vis.get_view_control()
         cam_param = ctr.convert_to_pinhole_camera_parameters()
         cam_param = update_cam(cam_param, world_trans)
-        # print(cam_param.intrinsic)
+
+        cam_param.intrinsic.set_intrinsics(1280,720,692.0,692.0,639.5,359.5)
+  
         ctr.convert_from_pinhole_camera_parameters(cam_param)
 
         ## capture RGB appearance
