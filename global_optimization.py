@@ -145,6 +145,7 @@ class FittingOP:
                                        create_transl=True,
                                        batch_size=self.batch_size
                                        )
+        self.num_body= num_body
         self.vposer.to(self.device)
         self.body_mesh_model.to(self.device)
         print(self.scene_verts_path)
@@ -154,19 +155,35 @@ class FittingOP:
         self.s_verts_batch = self.s_verts_batch.repeat(self.batch_size, 1,1)
         # self.camera_ext = extract_ext(self.camera_path)
         # scale=1.0
-        self.scale = Variable(torch.tensor(2.0).to(self.device),requires_grad=True)
-
-        # print(self.scale)
+        self.scale = Variable(torch.tensor(1.8).to(self.device),requires_grad=True)
         self.body_rotation_rec = Variable(torch.randn(num_body,75).to(self.device), requires_grad=True)
-        self.optimizer = optim.Adam([self.body_rotation_rec,self.scale], lr=self.init_lr_h)
+        # print(self.scale)
+        self.camera_ext = Variable(torch.randn(num_body,4,4).to(self.device),requires_grad=True)
+        self.optimizer = optim.Adam([self.body_rotation_rec,self.scale,self.camera_ext], lr=self.init_lr_h)
 
 
-    def extract_ext(self,body_data):
+    def body2world(self):
+        cam_transl_batch=self.body_rotation_rec[:,-3:]
+        boyd2camera_list=[]
+        for i in range(self.num_body):
+
+            camera_pose = torch.eye(4)
+            camera_transl = cam_transl_batch[i,:]*self.scale
+            camera_pose[:3, 3] = camera_transl
+            camera_pose = camera_pose.cuda()
+            boyd2camera_list.append(camera_pose)
+
+        # cam_ext_list=self.extract_ext(body_data_rotation)     
+        body2camera_batch = torch.stack(boyd2camera_list, dim=0) 
+        # print(cam_ext_batch.size()) 
+        body2world_batch =  torch.matmul(self.camera_ext,body2camera_batch)
+        return body2world_batch
+
+    def extract_ext(self):
         lines = [line.rstrip('\n') for line in open(self.camera_path)]
         cam_ext_list=[]
-        cam_transl_batch=body_data[:,-3:].detach().cpu().numpy().squeeze()
-
         num=len(lines)
+
         for i in range(num):
             line = lines[i]
             items = line.split(' ')
@@ -178,26 +195,33 @@ class FittingOP:
             cam_ext[:3, 3] = tvec
             cam_ext[0:3, 0:3] =romat
             cam_ext = inv(cam_ext)
-            camera_pose = np.eye(4)
-            camera_transl = cam_transl_batch[i,:]*self.scale.detach().cpu().numpy().squeeze()
-            camera_pose[:3, 3] = camera_transl
-            cam_ext = np.matmul(cam_ext,(camera_pose))
             cam_ext = torch.tensor(cam_ext, dtype=torch.float32).cuda()
             cam_ext_list.append(cam_ext)
 
-        return cam_ext_list
+        cam_ext_batch = torch.stack(cam_ext_list, dim=0) 
 
-    def cal_loss(self, body_data_rotation):
+
+        return cam_ext_batch
+
+    def cal_loss(self, body_data_rotation,idx1):
         ### reconstruction loss
-        cam_ext_list=self.extract_ext(body_data_rotation)     
-        cam_ext_batch = torch.stack(cam_ext_list, dim=0)  
+        # cam_ext_list=self.extract_ext(body_data_rotation)   
+        # print(self.camera_ext)  
+        body2world_batch = self.body2world() 
 
-        loss_rec = self.weight_loss_rec*F.l1_loss(body_data_rotation, self.body_rotation_rec)
+        weights=torch.ones(body_data_rotation.size())
+        weights[idx1,:]=0.0
+        weights = weights.to(self.device)
+
+        loss_rec = self.weight_loss_rec*torch.mean(torch.abs(body_data_rotation-self.body_rotation_rec)*weights)
 
         body_rec = convert_to_3D_rot(self.body_rotation_rec)
         vposer_pose = body_rec[:,16:48]
         loss_vposer = self.weight_loss_vposer * torch.mean(vposer_pose**2)
 
+
+        diff=self.body_rotation_rec[0:-1,:]-self.body_rotation_rec[1:,:]
+        loss_smoothing =  torch.mean((diff[0:-1,:]-diff[1:,:])**2)
         body_param_rec = HumanCVAE.body_params_encapsulate_batch(body_rec)
 
         joint_rot_batch = self.vposer.decode(body_param_rec['body_pose_vp'], 
@@ -215,7 +239,8 @@ class FittingOP:
                                               **body_param_)
         body_verts_batch = smplx_output.vertices #[b, 10475,3]
         body_verts_batch = body_verts_batch*self.scale
-        body_verts_batch = verts_transform(body_verts_batch, cam_ext_batch)
+        body_verts_batch = verts_transform(body_verts_batch, body2world_batch)
+
 
         vid, fid = get_contact_id(body_segments_folder=self.contact_id_folder,
                                 contact_body_parts=self.contact_part)
@@ -224,36 +249,96 @@ class FittingOP:
         dist_chamfer_contact = ext.chamferDist()
         contact_dist, _ = dist_chamfer_contact(body_verts_contact_batch.contiguous(), 
                                                 self.s_verts_batch.contiguous())
-        loss_contact = self.weight_contact * torch.mean(torch.sqrt(contact_dist+1e-4)/(torch.sqrt(contact_dist+1e-4)+1.0))  
+        loss_contact = self.weight_contact * torch.mean(torch.sqrt(contact_dist+1e-4)/(torch.sqrt(contact_dist+1e-4)+1.0))
+        #decrease 1.0  
 
-        return loss_rec, loss_vposer, loss_contact
+        body_joints_batch = smplx_output.joints[:,0:23,:]
+        body_joints_batch = verts_transform(body_joints_batch, body2world_batch)
+        # print(smplx_output)
+        # wordl_diff = body2world_batch[0:-1,:,:]-body2world_batch[1:,:,:]
+        # wordl_diff = body_joints_batch[0:-1,:,:]-body_joints_batch[1:,:,:]
+        # loss_world_smoothing = torch.mean(torch.abs(wordl_diff[0:-1,:,:]-wordl_diff[1:,:,:]))
+        loss_world_smoothing= torch.mean(torch.abs(body_joints_batch[0:-1,:,:]-body_joints_batch[1:,:,:]))
+        # world_diff = sum_world_diff/299.0
+        # print(world_diff.size())
+        # print(body_joints_batch.size())
+        # print(body_joints_batch)  
+        return loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing
 
-    def smoothing_loss(self,body_data_rotation):
-        # print(self.body_rotation_rec.shape)
-        loss_smoothing = torch.mean((self.body_rotation_rec[0:-1,:]-self.body_rotation_rec[1:,:])**2)
-        # print(self.body_rotation_rec[2,9:75])
-        return loss_smoothing
+
+    def init(self,body_data_rotation):
+        #### we find all wrogn detection and replace the initial value with closet correct detection
+        #### return: index of wrong detections
+
+        self.body_rotation_rec.data = body_data_rotation.clone()
+        self.camera_ext.data = self.extract_ext().clone()
+        ### where we calculate the weights based on "consecutiveness" of the body model
+        ### i.e. if the two neighboring body model are way off,one of the them should 
+        ### have wrong opnepose results, and we lower the wieghts of recosntruction losss accordingl
+        body_par = convert_to_3D_rot(body_data_rotation)
+        vposer_pose = body_par[:,16:48]
+
+        ## here we find all abnormal openpose detections by using vposer
+        ### we set the weights of reconstruction loss to zero for those detections
+        vposer_stats = torch.sum(vposer_pose**2,1)
+        avg_vposer = torch.sum(vposer_stats)/300.0
+        idx1 = torch.where(vposer_stats>avg_vposer*1.8)[0].cpu().numpy()
+
+        print(idx1)
+
+        ### given an array of 1 and 0, 1 refers to correct pose, and 0 refers to wrong pose.    
+        ### we want to find the index of the closet 1 to each 0, for new initialization.
+        temp = np.ones(300)
+        temp[idx1]=0.0
+
+        index_one = np.where(temp==1)[0]
+        index_zero = np.where(temp==0)[0]
+        w = index_one.shape[0]
+        h = index_zero.shape[0]
+        #
+        index_one = np.tile(index_one,(h,1))
+        index_zero = np.tile(index_zero,(w,1))
+        index_zero = index_zero.T
+        diff = np.abs(index_zero-index_one)
+        pos = np.argmin(diff, axis=1)
+        pos = index_one[0,pos]
+
+        self.body_rotation_rec.data[idx1,:]=body_data_rotation[pos,:]
+
+        return idx1
 
     def fitting(self, body_data):
 
         body_data_rotation = convert_to_6D_rot(body_data)
 
-        self.body_rotation_rec.data = body_data_rotation.clone()
+        idx1 = self.init(body_data_rotation)
 
         body_data_rotation=body_data_rotation.detach()
 
         for ii in range(self.num_iter):
 
             self.optimizer.zero_grad()
-            loss_rec, loss_vposer, loss_contact = self.cal_loss(body_data_rotation)
-            loss_smoothing = self.smoothing_loss(body_data_rotation)
-
-            loss = loss_contact*0.1 + loss_smoothing + loss_rec
+            loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing = self.cal_loss(body_data_rotation,idx1)
+            if ii < self.num_iter*0.8:
+                self.camera_ext.requires_grad=False
+                self.scale.requires_grad=True
+                loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
                         # print(self.body_rotation_rec[0,75:78])
-            # if self.verbose:
-            print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, total_loss={:f}'.format(
-                                    ii, loss_rec.item(), loss_vposer.item(), 
-                                    loss_smoothing.item(), loss.item()) )
+                print(self.scale)
+                # if self.verbose:
+                print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f},total_loss={:f}'.format(
+                                        ii, loss_rec.item(), loss_vposer.item(), 
+                                        loss_smoothing.item(),loss_contact.item(),loss.item()) )
+            else:
+                self.camera_ext.requires_grad=True
+                self.scale.requires_grad=False
+                self.body_rotation_rec.requires_grad=True
+                loss = loss_rec+loss_world_smoothing*1
+                print(self.scale)
+                # if self.verbose:
+                print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f},loss_world_smoothing={:f},total_loss={:f}'.format(
+                                        ii, loss_rec.item(), loss_vposer.item(), 
+                                        loss_smoothing.item(),loss_contact.item(), loss_world_smoothing.item(), loss.item()) )
 
             loss.backward(retain_graph=False)
             self.optimizer.step()
@@ -261,16 +346,16 @@ class FittingOP:
         print('[INFO][fitting] fitting finish, returning optimal value')
         body_rec =  convert_to_3D_rot(self.body_rotation_rec)
         print(self.scale)
-        return body_rec, self.scale.detach().cpu().numpy().squeeze()
+        return body_rec, self.scale.detach().cpu().numpy().squeeze(),self.camera_ext
 
-    def save_result(self, body_rec, scale, fit_path):
+    def save_result(self, body_rec, scale, camera_ext, fit_path):
 
 
         if not os.path.exists(fit_path):
             os.makedirs(fit_path)
             print(fit_path)
         # print(body_rec.shape)
-        body_param_list = HumanCVAE.body_params_encapsulate(body_rec, scale)
+        body_param_list = HumanCVAE.body_params_encapsulate(body_rec, scale,camera_ext)
         # print('[INFO] save results to: '+output_data_file)
         # for ii, body_param in enumerate(body_param_list):
 
@@ -295,8 +380,8 @@ if __name__=='__main__':
                 'camera_path': '/home/miao/data/rylm/segmented_data/'+sample_name+'/camerapose.txt',
                 'human_model_path': './models',
                 'vposer_ckpt_path': './vposer/',
-                'init_lr_h': 0.01,
-                'num_iter': 10,
+                'init_lr_h': 0.005,
+                'num_iter':500,
                 'batch_size': 1, 
                 'device': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                 'contact_id_folder':  '/home/miao/data/rylm/body_segments',
@@ -335,8 +420,8 @@ if __name__=='__main__':
     num_body = smplifyx_data.shape[0]
     fop = FittingOP(fittingconfig, lossconfig, num_body)
 
-    body_rec,scale = fop.fitting(body_gpu)
+    body_rec,scale,camera_ext = fop.fitting(body_gpu)
     out_path = fit_path
     # print(out_path)
-    fop.save_result(body_rec, scale, out_path)
+    fop.save_result(body_rec, scale, camera_ext, out_path)
         # break
