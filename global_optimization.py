@@ -17,6 +17,7 @@ import json
 import argparse
 import numpy as np
 import open3d as o3d
+import scipy.io as sio
 
 import torch
 import torch.nn as nn
@@ -34,6 +35,13 @@ from chamfer_python import distChamfer
 from cvae import HumanCVAE, ContinousRotReprDecoder
 from numpy.linalg import inv
 from MotionGeneration import LocalHumanDynamicsGRUNoise
+
+
+BATCH_FRAME_NUM = 30
+# TODO
+DCT_NUM = 10
+DCT_MAT_PATH = '../Data/DCT_Basis/%d.mat' % BATCH_FRAME_NUM
+
 
 def qvec2rotmat(qvec):
     return np.array([
@@ -113,6 +121,14 @@ def verts_transform(verts_batch, cam_ext_batch):
     
     return verts_batch_transformed
 
+
+
+def load_dct_base():
+	mtx = sio.loadmat(DCT_MAT_PATH, squeeze_me=True, struct_as_record=False)	
+	mtx = mtx['D']
+	mtx = mtx[:DCT_NUM]
+
+	return np.array(mtx)
 
 
 
@@ -203,6 +219,26 @@ class FittingOP:
 
         return cam_ext_batch
 
+    def cal_dctloss(self, body_joints_batch):
+        self.dct_mtx = load_dct_base()
+        self.dct_mtx = torch.tensor(self.dct_mtx, dtype=torch.float32, device=self.device)
+
+        joint_ids = [] # TODO, indices of joints in body_joints that need dct loss
+        self.c_dct = Variable(torch.zeros([len(joint_ids), 3, DCT_NUM]).to(self.device),requires_grad=True)
+
+        for i, jid in enumerate(joint_ids):
+            for j, aid in enumerate([0, 1, 2]):
+                # trajectory = body_joints_batch[:, i, aid]
+                trajectory = body_joints_batch[:, jid, aid]
+                
+                trajectory_dct = torch.matmul(self.dct_mtx, torch.unsqueeze(self.c_dct[i, j], -1))
+                trajectory_dct = torch.squeeze(trajectory_dct)
+
+                objs['DCT_%d_%d' % (i, j)] = torch.sum( torch.square(trajectory - trajectory_dct) )
+        
+        return torch.mean(torch.stack(list(objs.values())))
+
+
     def cal_loss(self, body_data_rotation,idx1):
         ### reconstruction loss
         # cam_ext_list=self.extract_ext(body_data_rotation)   
@@ -221,7 +257,7 @@ class FittingOP:
 
 
         diff=self.body_rotation_rec[0:-1,:]-self.body_rotation_rec[1:,:]
-        loss_smoothing =  torch.mean((diff[0:-1,:]-diff[1:,:])**2)
+        loss_smoothing =  torch.mean(torch.abs(diff[0:-1,:]-diff[1:,:]))
         body_param_rec = HumanCVAE.body_params_encapsulate_batch(body_rec)
 
         joint_rot_batch = self.vposer.decode(body_param_rec['body_pose_vp'], 
@@ -263,6 +299,10 @@ class FittingOP:
         # print(world_diff.size())
         # print(body_joints_batch.size())
         # print(body_joints_batch)  
+
+        # dct loss (not tested)
+        # loss_dct = self.cal_dctloss(body_joints_batch)
+        
         return loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing
 
 
@@ -333,7 +373,7 @@ class FittingOP:
                 self.camera_ext.requires_grad=True
                 self.scale.requires_grad=False
                 self.body_rotation_rec.requires_grad=True
-                loss = loss_rec+loss_world_smoothing*1
+                loss = loss_rec+loss_world_smoothing*1 + loss_smoothing*0.5
                 print(self.scale)
                 # if self.verbose:
                 print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f},loss_world_smoothing={:f},total_loss={:f}'.format(
