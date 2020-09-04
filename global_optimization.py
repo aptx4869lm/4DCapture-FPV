@@ -37,10 +37,14 @@ from numpy.linalg import inv
 from MotionGeneration import LocalHumanDynamicsGRUNoise
 
 
-BATCH_FRAME_NUM = 30
+BATCH_FRAME_NUM = 60
+NUM_BATCHES = 5
 # TODO
-DCT_NUM = 10
+DCT_NUM = 5
 DCT_MAT_PATH = '../Data/DCT_Basis/%d.mat' % BATCH_FRAME_NUM
+
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 
 
 def qvec2rotmat(qvec):
@@ -124,11 +128,11 @@ def verts_transform(verts_batch, cam_ext_batch):
 
 
 def load_dct_base():
-	mtx = sio.loadmat(DCT_MAT_PATH, squeeze_me=True, struct_as_record=False)	
-	mtx = mtx['D']
-	mtx = mtx[:DCT_NUM]
-
-	return np.array(mtx)
+        mtx = sio.loadmat(DCT_MAT_PATH, squeeze_me=True, struct_as_record=False)	
+        mtx = mtx['D']
+        mtx = mtx[:DCT_NUM]
+        
+        return np.array(mtx).T
 
 
 
@@ -175,7 +179,12 @@ class FittingOP:
         self.body_rotation_rec = Variable(torch.randn(num_body,75).to(self.device), requires_grad=True)
         # print(self.scale)
         self.camera_ext = Variable(torch.randn(num_body,4,4).to(self.device),requires_grad=True)
-        self.optimizer = optim.Adam([self.body_rotation_rec,self.scale,self.camera_ext], lr=self.init_lr_h)
+
+        self.dct_mtx = load_dct_base()
+        self.dct_mtx = torch.tensor(self.dct_mtx, dtype=torch.float32, device=self.device)
+        self.c_dct = Variable(torch.randn(NUM_BATCHES, 23, 3, DCT_NUM).to(self.device),requires_grad=True)
+
+        self.optimizer = optim.Adam([self.body_rotation_rec,self.scale,self.camera_ext,self.c_dct], lr=self.init_lr_h)
 
 
     def body2world(self):
@@ -220,21 +229,18 @@ class FittingOP:
         return cam_ext_batch
 
     def cal_dctloss(self, body_joints_batch):
-        self.dct_mtx = load_dct_base()
-        self.dct_mtx = torch.tensor(self.dct_mtx, dtype=torch.float32, device=self.device)
-
-        joint_ids = [] # TODO, indices of joints in body_joints that need dct loss
-        self.c_dct = Variable(torch.zeros([len(joint_ids), 3, DCT_NUM]).to(self.device),requires_grad=True)
+        joint_ids = list(range(23)) # indices of joints in body_joints that need dct loss
+        objs = {}
 
         for i, jid in enumerate(joint_ids):
             for j, aid in enumerate([0, 1, 2]):
-                # trajectory = body_joints_batch[:, i, aid]
-                trajectory = body_joints_batch[:, jid, aid]
-                
-                trajectory_dct = torch.matmul(self.dct_mtx, torch.unsqueeze(self.c_dct[i, j], -1))
-                trajectory_dct = torch.squeeze(trajectory_dct)
+                for k in range(NUM_BATCHES):
+                    # trajectory = body_joints_batch[:, i, aid]
+                    trajectory = body_joints_batch[BATCH_FRAME_NUM*k:BATCH_FRAME_NUM*(k+1), jid, aid]
+                    trajectory_dct = torch.matmul(self.dct_mtx, torch.unsqueeze(self.c_dct[k, i, j], -1))
+                    trajectory_dct = torch.squeeze(trajectory_dct)
 
-                objs['DCT_%d_%d' % (i, j)] = torch.sum( torch.square(trajectory - trajectory_dct) )
+                    objs['DCT_%d_%d_%d' % (i, j, k)] = torch.sum( (trajectory - trajectory_dct)**2 )
         
         return torch.mean(torch.stack(list(objs.values())))
 
@@ -300,10 +306,9 @@ class FittingOP:
         # print(body_joints_batch.size())
         # print(body_joints_batch)  
 
-        # dct loss (not tested)
-        # loss_dct = self.cal_dctloss(body_joints_batch)
+        loss_dct = self.cal_dctloss(body_joints_batch)
         
-        return loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing
+        return loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct
 
 
     def init(self,body_data_rotation):
@@ -356,32 +361,49 @@ class FittingOP:
         body_data_rotation=body_data_rotation.detach()
 
         for ii in range(self.num_iter):
-
-            self.optimizer.zero_grad()
-            loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing = self.cal_loss(body_data_rotation,idx1)
-            if ii < self.num_iter*0.8:
-                self.camera_ext.requires_grad=False
-                self.scale.requires_grad=True
-                loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
-                        # print(self.body_rotation_rec[0,75:78])
-                print(self.scale)
-                # if self.verbose:
-                print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f},total_loss={:f}'.format(
+            with torch.autograd.set_detect_anomaly(True):
+                self.optimizer.zero_grad()
+                loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct = self.cal_loss(body_data_rotation,idx1)
+                if  ii < self.num_iter*0.8:
+                    self.camera_ext.requires_grad=False
+                    self.scale.requires_grad=False
+                    self.body_rotation_rec.requires_grad=False
+                    self.c_dct.requires_grad=True
+                    loss = loss_dct*10
+                    # loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
+                    print(self.scale)
+                    # if self.verbose:
+                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
                                         ii, loss_rec.item(), loss_vposer.item(), 
-                                        loss_smoothing.item(),loss_contact.item(),loss.item()) )
-            else:
-                self.camera_ext.requires_grad=True
-                self.scale.requires_grad=False
-                self.body_rotation_rec.requires_grad=True
-                loss = loss_rec+loss_world_smoothing*1 + loss_smoothing*0.5
-                print(self.scale)
-                # if self.verbose:
-                print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f},loss_world_smoothing={:f},total_loss={:f}'.format(
+                                        loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
+                if ii < self.num_iter*0.8:
+                    self.camera_ext.requires_grad=False
+                    self.scale.requires_grad=False
+                    self.body_rotation_rec.requires_grad=True
+                    self.c_dct.requires_grad=False
+                    loss = loss_dct*0.001 + loss_rec + loss_contact*0.1
+                    # loss = loss_rec
+                    print(self.scale)
+                    # if self.verbose:
+                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
                                         ii, loss_rec.item(), loss_vposer.item(), 
-                                        loss_smoothing.item(),loss_contact.item(), loss_world_smoothing.item(), loss.item()) )
-
-            loss.backward(retain_graph=False)
-            self.optimizer.step()
+                                        loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
+                else:
+                    self.camera_ext.requires_grad=True
+                    self.scale.requires_grad=False
+                    self.body_rotation_rec.requires_grad=True
+                    self.c_dct.requires_grad=False
+                    loss = loss_rec+loss_world_smoothing*1 + loss_smoothing*0.5
+                    # loss = loss_rec
+                    print(self.scale)
+                    # if self.verbose:
+                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_world_smoothing={:f}, loss_dct={:f}, total_loss={:f}'.format(
+                                        ii, loss_rec.item(), loss_vposer.item(), 
+                                        loss_smoothing.item(),loss_contact.item(), loss_world_smoothing.item(), loss_dct.item(), loss.item()) )
+                
+                loss.backward(retain_graph=True)
+                self.optimizer.step()
+                torch.cuda.empty_cache()
 
         print('[INFO][fitting] fitting finish, returning optimal value')
         body_rec =  convert_to_3D_rot(self.body_rotation_rec)
@@ -396,6 +418,7 @@ class FittingOP:
             print(fit_path)
         # print(body_rec.shape)
         body_param_list = HumanCVAE.body_params_encapsulate(body_rec, scale,camera_ext)
+        # body_param_list = HumanCVAE.body_params_encapsulate(body_rec, 1.0, camera_ext)
         # print('[INFO] save results to: '+output_data_file)
         # for ii, body_param in enumerate(body_param_list):
 
@@ -416,15 +439,15 @@ if __name__=='__main__':
                 # 'input_data_file': input_data_file,
                 # 'output_data_file': os.path.join(fit_path,scenename+'/body_gen_{:06d}.pkl'.format(ii)),
                 # 'output_data_file': '/is/ps2/yzhang/workspaces/smpl-env-gen-3d/results_baseline_postproc/realcams/'+scenename+'/body_gen_{:06d}.pkl'.format(ii),
-                'scene_verts_path': '/home/miao/data/rylm/segmented_data/'+sample_name+'/meshed-poisson.ply',
-                'camera_path': '/home/miao/data/rylm/segmented_data/'+sample_name+'/camerapose.txt',
+                'scene_verts_path': '/home/miao/'+sample_name+'/meshed-poisson.ply',
+                'camera_path': '/home/miao/'+sample_name+'/camerapose.txt',
                 'human_model_path': './models',
                 'vposer_ckpt_path': './vposer/',
                 'init_lr_h': 0.005,
-                'num_iter':500,
+                'num_iter':5000,
                 'batch_size': 1, 
                 'device': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                'contact_id_folder':  '/home/miao/data/rylm/body_segments',
+                'contact_id_folder':  './body_segments',
                 'contact_part': ['L_Leg','R_Leg'],
                 'verbose': False
             }
