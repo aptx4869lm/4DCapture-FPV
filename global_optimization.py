@@ -34,6 +34,7 @@ import ChamferDistancePytorch.dist_chamfer as ext
 from chamfer_python import distChamfer
 from cvae import HumanCVAE, ContinousRotReprDecoder
 from numpy.linalg import inv
+from scipy.io import savemat
 from MotionGeneration import LocalHumanDynamicsGRUNoise
 
 
@@ -311,6 +312,141 @@ class FittingOP:
         return loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct
 
 
+    def detect_contact(self, body_data_rotation, idx1):
+        # detect contact between floor and feet
+
+        body2world_batch = self.body2world() 
+
+        body_rec = convert_to_3D_rot(self.body_rotation_rec)
+        body_param_rec = HumanCVAE.body_params_encapsulate_batch(body_rec)
+
+        joint_rot_batch = self.vposer.decode(body_param_rec['body_pose_vp'], 
+                                           output_type='aa').view(self.batch_size, -1)
+
+        body_param_ = {}
+        for key in body_param_rec.keys():
+            if key in ['body_pose_vp']:
+                continue
+            else:
+                body_param_[key] = body_param_rec[key]
+
+        smplx_output = self.body_mesh_model(return_verts=True, 
+                                              body_pose=joint_rot_batch,
+                                              **body_param_)
+        body_verts_batch = smplx_output.vertices #[b, 10475,3]
+        body_verts_batch = body_verts_batch*self.scale
+        body_verts_batch = verts_transform(body_verts_batch, body2world_batch)
+
+
+        vid_left, _ = get_contact_id(body_segments_folder=self.contact_id_folder,
+                                contact_body_parts=['L_Leg']) # 'L_Leg','R_Leg'
+        body_verts_contact_batch_left = body_verts_batch[:, vid_left, :]
+
+        vid_right, _ = get_contact_id(body_segments_folder=self.contact_id_folder,
+                                contact_body_parts=['R_Leg']) # 'L_Leg','R_Leg'
+        body_verts_contact_batch_right = body_verts_batch[:, vid_right, :]
+
+        dist_chamfer_contact = ext.chamferDist()
+        contact_dist_left, _ = dist_chamfer_contact(body_verts_contact_batch_left.contiguous(), 
+                                                self.s_verts_batch.contiguous())
+        contact_dist_right, _ = dist_chamfer_contact(body_verts_contact_batch_right.contiguous(), 
+                                                self.s_verts_batch.contiguous())
+        
+        contact_dist_left = torch.mean(contact_dist_left, dim=1)
+        contact_dist_right = torch.mean(contact_dist_right, dim=1)
+        print(contact_dist_left)
+        print(contact_dist_right)
+
+        # np.savez("contact.npz", left=contact_dist_left.numpy(), right=contact_dist_right.numpy())
+        # contact_dict = {"left":contact_dist_left.detach().cpu().numpy(), "right":contact_dist_right.detach().cpu().numpy()}
+        # savemat("contact.mat", contact_dict)
+
+        weight_left = contact_dist_left / (contact_dist_left + contact_dist_left)
+        return weight_left.detach()
+
+    
+    def cal_loss2(self, body_data_rotation, idx1, contact_weight, left_turn):
+         
+        body2world_batch = self.body2world() 
+
+        weights=torch.ones(body_data_rotation.size())
+        weights[idx1,:]=0.0
+        weights = weights.to(self.device)
+
+        loss_rec = self.weight_loss_rec*torch.mean(torch.abs(body_data_rotation-self.body_rotation_rec)*weights)
+
+        body_rec = convert_to_3D_rot(self.body_rotation_rec)
+
+        # local smoothing
+        diff_local=self.body_rotation_rec[0:-1,:]-self.body_rotation_rec[1:,:]
+        loss_local_smoothing =  torch.mean(torch.abs(diff_local[0:-1,:]-diff_local[1:,:]))
+
+        body_param_rec = HumanCVAE.body_params_encapsulate_batch(body_rec)
+
+        joint_rot_batch = self.vposer.decode(body_param_rec['body_pose_vp'], 
+                                           output_type='aa').view(self.batch_size, -1)
+
+        body_param_ = {}
+        for key in body_param_rec.keys():
+            if key in ['body_pose_vp']:
+                continue
+            else:
+                body_param_[key] = body_param_rec[key]
+
+        smplx_output = self.body_mesh_model(return_verts=True, 
+                                              body_pose=joint_rot_batch,
+                                              **body_param_)
+        body_verts_batch = smplx_output.vertices #[b, 10475,3]
+        body_verts_batch = body_verts_batch*self.scale
+        body_verts_batch = verts_transform(body_verts_batch, body2world_batch)
+
+        # global smoothing
+        diff = body_verts_batch[0:-1,:]-body_verts_batch[1:,:]
+        loss_smoothing = torch.mean(torch.abs(diff[0:-1,:]-diff[1:,:]))
+
+        vid_left, _ = get_contact_id(body_segments_folder=self.contact_id_folder,
+                                contact_body_parts=['L_Leg']) # 'L_Leg','R_Leg'
+        body_verts_contact_batch_left = body_verts_batch[:, vid_left, :]
+
+        vid_right, _ = get_contact_id(body_segments_folder=self.contact_id_folder,
+                                contact_body_parts=['R_Leg']) # 'L_Leg','R_Leg'
+        body_verts_contact_batch_right = body_verts_batch[:, vid_right, :]
+
+        wordl_diff_left = body_verts_contact_batch_left[0:-1,:,:]-body_verts_contact_batch_left[1:,:,:]
+        wordl_diff_right = body_verts_contact_batch_right[0:-1,:,:]-body_verts_contact_batch_right[1:,:,:]
+
+        weight_right = contact_weight.clone()
+        weight_left = 1 - weight_right
+
+        weight_left[weight_left<0.5] = 0.0
+        weight_right[weight_right<0.5] = 0.0
+
+        weight_right_ = weight_right[1:]
+        weight_left_ = weight_left[1:]
+        weight_left_ = weight_left_.unsqueeze(1).unsqueeze(1).repeat(1, wordl_diff_left.shape[1], wordl_diff_left.shape[2])
+        weight_right_ = weight_right_.unsqueeze(1).unsqueeze(1).repeat(1, wordl_diff_right.shape[1], wordl_diff_right.shape[2])
+        
+        loss_contact_smoothing = torch.mean(torch.abs(wordl_diff_left * weight_left_)) + torch.mean(torch.abs(wordl_diff_right * weight_right_))
+
+
+        """dist_chamfer_contact = ext.chamferDist()
+        if left_turn:
+            contact_dist, _ = dist_chamfer_contact(body_verts_contact_batch_left.contiguous(), 
+                                                    self.s_verts_batch.contiguous()) # [300, ...]
+            contact_dist = torch.mean(torch.sqrt(contact_dist+1e-4)/(torch.sqrt(contact_dist+1e-4)+1.0), dim=1)
+
+            loss_contact = self.weight_contact * torch.mean(contact_dist*weight_left)
+
+        else:
+            contact_dist, _ = dist_chamfer_contact(body_verts_contact_batch_right.contiguous(), 
+                                                    self.s_verts_batch.contiguous()) # [300, ...]
+            contact_dist = torch.mean(torch.sqrt(contact_dist+1e-4)/(torch.sqrt(contact_dist+1e-4)+1.0), dim=1)
+
+            loss_contact = self.weight_contact * torch.mean(contact_dist*weight_right)"""
+
+        return loss_rec, loss_local_smoothing, loss_smoothing, loss_contact_smoothing
+
+
     def init(self,body_data_rotation):
         #### we find all wrogn detection and replace the initial value with closet correct detection
         #### return: index of wrong detections
@@ -352,7 +488,7 @@ class FittingOP:
 
         return idx1
 
-    def fitting(self, body_data):
+    def fitting(self, body_data, mode='local'):
 
         body_data_rotation = convert_to_6D_rot(body_data)
 
@@ -360,50 +496,138 @@ class FittingOP:
 
         body_data_rotation=body_data_rotation.detach()
 
-        for ii in range(self.num_iter):
-            with torch.autograd.set_detect_anomaly(True):
-                self.optimizer.zero_grad()
-                loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct = self.cal_loss(body_data_rotation,idx1)
-                if  ii < self.num_iter*0.8:
-                    self.camera_ext.requires_grad=False
-                    self.scale.requires_grad=False
-                    self.body_rotation_rec.requires_grad=False
-                    self.c_dct.requires_grad=True
-                    loss = loss_dct*10
-                    # loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
-                    print(self.scale)
-                    # if self.verbose:
-                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
-                                        ii, loss_rec.item(), loss_vposer.item(), 
-                                        loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
-                if ii < self.num_iter*0.8:
+        if mode == 'local':
+
+            for ii in range(self.num_iter):
+                with torch.autograd.set_detect_anomaly(True):
+                    self.optimizer.zero_grad()
+                    loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct = self.cal_loss(body_data_rotation,idx1)
+                    if  ii < self.num_iter*0.8:
+                        self.camera_ext.requires_grad=False
+                        self.scale.requires_grad=True
+                        self.body_rotation_rec.requires_grad=True
+                        self.c_dct.requires_grad=False
+                        # loss = loss_dct*10
+                        loss = loss_contact*0.2 + loss_smoothing*1.0 + loss_rec
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(), loss_contact.item(), loss.item()) )
+                    elif ii < self.num_iter*1:
+                        self.camera_ext.requires_grad=True
+                        self.scale.requires_grad=False
+                        self.body_rotation_rec.requires_grad=True
+                        self.c_dct.requires_grad=False
+                        # loss = loss_dct*0.0001 + loss_rec*0.5 + loss_contact*0.1
+                        loss = loss_rec + loss_smoothing*0.5
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(), loss_contact.item(), loss.item()) )
+                    
+                    loss.backward(retain_graph=True)
+                    self.optimizer.step()
+                    torch.cuda.empty_cache()
+            
+            contact_weight = self.detect_contact(body_data_rotation,idx1)
+
+            for ii in range(int(0.4*self.num_iter)):
+                with torch.autograd.set_detect_anomaly(True):
+                    self.optimizer.zero_grad()
+                    left_turn = bool(ii%2)
+                    loss_rec, loss_local_smoothing, loss_smoothing, loss_contact_smoothing= self.cal_loss2(body_data_rotation, idx1, contact_weight, left_turn)
+                    
                     self.camera_ext.requires_grad=False
                     self.scale.requires_grad=False
                     self.body_rotation_rec.requires_grad=True
                     self.c_dct.requires_grad=False
-                    loss = loss_dct*0.001 + loss_rec + loss_contact*0.1
-                    # loss = loss_rec
+                    # loss = loss_dct*10
+                    loss = loss_smoothing*1.0 + loss_local_smoothing + loss_rec + loss_contact_smoothing
                     print(self.scale)
                     # if self.verbose:
-                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
-                                        ii, loss_rec.item(), loss_vposer.item(), 
-                                        loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
-                else:
-                    self.camera_ext.requires_grad=True
-                    self.scale.requires_grad=False
-                    self.body_rotation_rec.requires_grad=True
-                    self.c_dct.requires_grad=False
-                    loss = loss_rec+loss_world_smoothing*1 + loss_smoothing*0.5
-                    # loss = loss_rec
-                    print(self.scale)
-                    # if self.verbose:
-                    print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_world_smoothing={:f}, loss_dct={:f}, total_loss={:f}'.format(
-                                        ii, loss_rec.item(), loss_vposer.item(), 
-                                        loss_smoothing.item(),loss_contact.item(), loss_world_smoothing.item(), loss_dct.item(), loss.item()) )
-                
-                loss.backward(retain_graph=True)
-                self.optimizer.step()
-                torch.cuda.empty_cache()
+                    print('[INFO][fitting] iter={:d}, l_rec={:f}, loss_local_smoothing={:f}, loss_smoothing={:f}, loss_contact_smoothing={:f}, total_loss={:f}'.format(
+                                        ii, loss_rec.item(), loss_local_smoothing.item(),
+                                        loss_smoothing.item(), loss_contact_smoothing.item(), loss.item()) )
+                    
+                    loss.backward(retain_graph=True)
+                    self.optimizer.step()
+                    torch.cuda.empty_cache()
+        
+        elif mode == 'global':
+
+            for ii in range(self.num_iter):
+                with torch.autograd.set_detect_anomaly(True):
+                    self.optimizer.zero_grad()
+                    loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct = self.cal_loss(body_data_rotation,idx1)
+                    if  ii < self.num_iter*0.8:
+                        self.camera_ext.requires_grad=False
+                        self.scale.requires_grad=True
+                        self.body_rotation_rec.requires_grad=True
+                        self.c_dct.requires_grad=False
+                        # loss = loss_dct*10
+                        loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(), loss_contact.item(), loss.item()) )
+                    else:
+                        self.camera_ext.requires_grad=True
+                        self.scale.requires_grad=False
+                        self.body_rotation_rec.requires_grad=True
+                        self.c_dct.requires_grad=False
+
+                        loss = loss_rec+loss_world_smoothing*1 + loss_smoothing*0.5
+                        # loss = loss_rec
+                        # loss = loss_dct*0.001 + loss_rec + loss_contact*0.1
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_world_smoothing={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(),loss_contact.item(), loss_world_smoothing.item(), loss.item()) )
+                    
+                    loss.backward(retain_graph=True)
+                    self.optimizer.step()
+                    torch.cuda.empty_cache()
+            
+        elif mode == 'dct':
+            self.num_iter = 10000
+            for ii in range(self.num_iter):
+                with torch.autograd.set_detect_anomaly(True):
+                    self.optimizer.zero_grad()
+                    loss_rec, loss_vposer, loss_contact, loss_smoothing, loss_world_smoothing, loss_dct = self.cal_loss(body_data_rotation,idx1)
+                    if  ii < self.num_iter*0.95:
+                        self.camera_ext.requires_grad=False
+                        self.scale.requires_grad=False
+                        self.body_rotation_rec.requires_grad=False
+                        self.c_dct.requires_grad=True
+
+                        loss = loss_dct*10
+                        # loss = loss_contact*0.1 + loss_smoothing*1.0 + loss_rec
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
+                    elif ii < self.num_iter*1:
+                        self.camera_ext.requires_grad=False
+                        self.scale.requires_grad=True
+                        self.body_rotation_rec.requires_grad=True
+                        self.c_dct.requires_grad=False
+
+                        loss = loss_dct*0.0001 + loss_rec*0.5 + loss_contact*0.1
+                        # loss = loss_rec + loss_smoothing*0.5
+                        print(self.scale)
+                        # if self.verbose:
+                        print('[INFO][fitting] iter={:d}, l_rec={:f}, l_vposer={:f}, loss_smoothing={:f}, loss_contact={:f}, loss_dct={:f}, total_loss={:f}'.format(
+                                            ii, loss_rec.item(), loss_vposer.item(), 
+                                            loss_smoothing.item(), loss_contact.item(), loss_dct.item(), loss.item()) )
+                    
+                    loss.backward(retain_graph=True)
+                    self.optimizer.step()
+                    torch.cuda.empty_cache()
 
         print('[INFO][fitting] fitting finish, returning optimal value')
         body_rec =  convert_to_3D_rot(self.body_rotation_rec)
@@ -432,7 +656,8 @@ if __name__=='__main__':
 
 
     body_path = sys.argv[1]
-    fit_path = body_path.replace('body_gen','smoothed_body')
+    fit_path = sys.argv[2]
+    mode = sys.argv[3] # mode smoothing term: 'local', 'global' or 'dct'
 
     sample_name = body_path.split('/')[-2]
     fittingconfig={
@@ -444,7 +669,7 @@ if __name__=='__main__':
                 'human_model_path': './models',
                 'vposer_ckpt_path': './vposer/',
                 'init_lr_h': 0.005,
-                'num_iter':5000,
+                'num_iter':500,
                 'batch_size': 1, 
                 'device': torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                 'contact_id_folder':  './body_segments',
@@ -483,7 +708,7 @@ if __name__=='__main__':
     num_body = smplifyx_data.shape[0]
     fop = FittingOP(fittingconfig, lossconfig, num_body)
 
-    body_rec,scale,camera_ext = fop.fitting(body_gpu)
+    body_rec,scale,camera_ext = fop.fitting(body_gpu, mode)
     out_path = fit_path
     # print(out_path)
     fop.save_result(body_rec, scale, camera_ext, out_path)
