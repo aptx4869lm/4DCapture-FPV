@@ -240,8 +240,8 @@ class FittingOP:
                     trajectory = body_joints_batch[BATCH_FRAME_NUM*k:BATCH_FRAME_NUM*(k+1), jid, aid]
                     trajectory_dct = torch.matmul(self.dct_mtx, torch.unsqueeze(self.c_dct[k, i, j], -1))
                     trajectory_dct = torch.squeeze(trajectory_dct)
-
-                    objs['DCT_%d_%d_%d' % (i, j, k)] = torch.sum( (trajectory - trajectory_dct)**2 )
+                    error = (trajectory - trajectory_dct)**2
+                    objs['DCT_%d_%d_%d' % (i, j, k)] = torch.sum( error/(error + 1.0) )
         
         return torch.mean(torch.stack(list(objs.values())))
 
