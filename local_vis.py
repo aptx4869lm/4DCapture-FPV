@@ -296,7 +296,10 @@ def main(fitting_dir):
                                        )
     vposer, _ = load_vposer(vposer_ckpt_path, vp_model='snapshot')
     i =0
-    for body_file in sorted(glob.glob(fitting_dir+'/*.pkl')):
+    imglist = sorted(glob.glob(fitting_dir+'/*.pkl'))
+
+    for i in range(224, len(imglist)):
+        body_file = imglist[i]
         print('viz frame {}'.format(body_file))
         ## get humam body params
         # if not os.path.exists(filename):
@@ -359,6 +362,17 @@ def main(fitting_dir):
             fx=692, fy=692,
             cx=640, cy=360)
         scene.add(camera, pose=camera_pose)
+
+        joint_test = model_output.joints[0,0:23,:].detach().cpu().numpy().squeeze()
+        joint_test = np.expand_dims(np.concatenate((joint_test,np.ones((23,1))), axis=1), axis=-1)
+        print(joint_test.shape)
+        P = np.matmul(camera.get_projection_matrix(width=1280, height=720), np.linalg.inv(camera_pose))
+        j2d = np.matmul(P,joint_test)
+        j2d = j2d/np.tile(j2d[:,3:,:],(1,4,1))
+        j2d = j2d[:,:2,0]
+        j2d[:,0] = j2d[:,0]*640 + 640
+        j2d[:,1] = j2d[:,1]*360 + 360
+        print(j2d)
         # print(camera_pose)
         # print(body_dict['transl'])
         # print(body_dict['global_orient'])
@@ -375,7 +389,6 @@ def main(fitting_dir):
         valid_mask = (color[:, :, -1] > 0)[:, :, np.newaxis]
 
         # img = cv2.imread(img_path).astype(np.float32)[:, :, ::-1] / 255.0
-        imgname= body_file.split('/')[-1].replace('.pkl','').replace('body_gen_','')
         imgname=str(i+1)
         output_dir = fitting_dir.replace('smoothed_body','local_vis')
         print(output_dir)
@@ -383,18 +396,20 @@ def main(fitting_dir):
             os.makedirs(output_dir)
             print(output_dir)
         write_name=output_dir+'/'+imgname.zfill(4)+'.png'
-        img_dir = fitting_dir.replace('smoothed_body','images')
+        img_dir = fitting_dir.replace(fitting_dir.split('\\')[-1],'images')
         # print(img_dir)
         read_name=img_dir+'/'+imgname.zfill(6)+'.jpg'
         print(read_name)
-        input_img = cv2.imread(read_name).astype(np.float32)[:, :, ::-1] / 255.0
+        input_img = cv2.imread(read_name).astype(np.float32)[:, :, ::-1]/255.0
 
         output_img = (color[:, :, :-1] * valid_mask +
-                      (1 - valid_mask) * input_img)
+                      (1 - valid_mask) * input_img)*255.0
 
-        img = pil_img.fromarray((output_img * 255).astype(np.uint8))
+        for i in range(j2d.shape[0]):
+            cv2.circle(output_img, (round(j2d[i,0]), round(j2d[i,1])), 2, (0,0,255), -1)
+
+        img = pil_img.fromarray((output_img).astype(np.uint8))
         img.save(write_name)
-        i = i+1
         # break
             # print(valid_mask)
             # break
