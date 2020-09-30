@@ -298,7 +298,8 @@ def main(fitting_dir):
     i =0
     imglist = sorted(glob.glob(fitting_dir+'/*.pkl'))
 
-    for i in range(224, len(imglist)):
+    for i in range(0, len(imglist)):
+    # for i in range(224, 225):
         body_file = imglist[i]
         print('viz frame {}'.format(body_file))
         ## get humam body params
@@ -309,6 +310,7 @@ def main(fitting_dir):
             param = pickle.load(f)
             pose_embedding= param['body_pose']
             camera_transl = param['camera_translation']
+            scale = param['scale']
         # print(param)
         pose_embedding = torch.tensor(pose_embedding, dtype=torch.float32)
         # print(pose_embedding)
@@ -331,7 +333,7 @@ def main(fitting_dir):
         # print(camera_transl)
         model_output = body_mesh_model(return_verts=True, **body_dict)
         vertices = model_output.vertices.detach().cpu().numpy().squeeze()
-        vertices = vertices*2.6951
+        vertices = vertices*scale
         import trimesh
         out_mesh = trimesh.Trimesh(vertices, body_mesh_model.faces, process=False)
         rot = trimesh.transformations.rotation_matrix(
@@ -351,7 +353,7 @@ def main(fitting_dir):
         scene.add(mesh, 'mesh')
 
         camera_transl = camera_transl.detach().cpu().numpy().squeeze()
-        camera_transl = camera_transl*2.6951
+        camera_transl = camera_transl*scale
         camera_transl[0] *= -1.0
 
         camera_pose = np.eye(4)
@@ -363,16 +365,18 @@ def main(fitting_dir):
             cx=640, cy=360)
         scene.add(camera, pose=camera_pose)
 
-        joint_test = model_output.joints[0,0:23,:].detach().cpu().numpy().squeeze()
+        joint_test = model_output.joints[0,0:23,:].detach().cpu().numpy().squeeze()*scale
+        joint_test = trimesh.transformations.transform_points(joint_test, rot)
         joint_test = np.expand_dims(np.concatenate((joint_test,np.ones((23,1))), axis=1), axis=-1)
-        print(joint_test.shape)
+        # print(joint_test.shape)
+        # P = np.matmul(camera.get_projection_matrix(width=1280, height=720), np.eye(4))
         P = np.matmul(camera.get_projection_matrix(width=1280, height=720), np.linalg.inv(camera_pose))
         j2d = np.matmul(P,joint_test)
         j2d = j2d/np.tile(j2d[:,3:,:],(1,4,1))
         j2d = j2d[:,:2,0]
         j2d[:,0] = j2d[:,0]*640 + 640
         j2d[:,1] = j2d[:,1]*360 + 360
-        print(j2d)
+        # print(j2d)
         # print(camera_pose)
         # print(body_dict['transl'])
         # print(body_dict['global_orient'])
@@ -398,7 +402,7 @@ def main(fitting_dir):
         write_name=output_dir+'/'+imgname.zfill(4)+'.png'
         img_dir = fitting_dir.replace(fitting_dir.split('\\')[-1],'images')
         # print(img_dir)
-        read_name=img_dir+'/'+imgname.zfill(6)+'.jpg'
+        read_name=img_dir+'/'+imgname.zfill(4)+'.jpg'
         print(read_name)
         input_img = cv2.imread(read_name).astype(np.float32)[:, :, ::-1]/255.0
 
@@ -406,7 +410,7 @@ def main(fitting_dir):
                       (1 - valid_mask) * input_img)*255.0
 
         for i in range(j2d.shape[0]):
-            cv2.circle(output_img, (round(j2d[i,0]), round(j2d[i,1])), 2, (0,0,255), -1)
+            cv2.circle(output_img, (round(j2d[i,0]), 719-round(j2d[i,1])), 4, (255,0,0), -1)
 
         img = pil_img.fromarray((output_img).astype(np.uint8))
         img.save(write_name)
