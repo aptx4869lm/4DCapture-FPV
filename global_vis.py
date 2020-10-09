@@ -1,4 +1,3 @@
-
 '''
 this is not the original prox fitting, but a modified version just for post-processing
 our generated results. The input is the smplx body parameters, and the optimization 
@@ -11,34 +10,17 @@ from __future__ import division
 import pickle
 import sys, os, glob
 import os.path as osp
-import pdb
-import json
 import argparse
 import numpy as np
 import open3d as o3d
 import cv2
-import PIL.Image as pil_img
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn import init
-import torch.optim as optim
-from torch.optim import lr_scheduler
-from torch.autograd import Variable
-import open3d as o3d
-
 import smplx
 from human_body_prior.tools.model_loader import load_vposer
-import ChamferDistancePytorch.dist_chamfer as ext
-import trimesh
-from cvae import HumanCVAE, ContinousRotReprDecoder
-import pyrender
-# from batch_gen_hdf5 import BatchGeneratorWithSceneMesh
 from numpy.linalg import inv
-import numpy as np
 
 def update_cam(cam_param,  trans):
-    
+    # set camera extrinsics
     cam_R = np.transpose(trans[:-1, :-1])
     cam_T = -trans[:-1, -1:]
     cam_T = np.matmul(cam_R, cam_T) #!!!!!! T is applied in the rotated coord
@@ -61,8 +43,7 @@ def qvec2rotmat(qvec):
          2 * qvec[2] * qvec[3] + 2 * qvec[0] * qvec[1],
          1 - 2 * qvec[1]**2 - 2 * qvec[2]**2]])
 
-def main(fitting_dir,flag, num):
-    # fitting_dir ='/home/miao/data/rylm/packed_data/miao_corridor_0/'
+def main(fitting_dir, num):
     vposer_ckpt_path = './vposer/'
     body_mesh_model = smplx.create('./models', 
                                        model_type='smplx',
@@ -82,27 +63,22 @@ def main(fitting_dir,flag, num):
                                        )
 
     vposer, _ = load_vposer(vposer_ckpt_path, vp_model='snapshot')
+
     ### setup visualization window
     vis = o3d.visualization.Visualizer()
-    # vis.create_window(width=1280, height=720,visible=True)
-    vis.create_window(width=1280, height=720,visible=False)
+    vis.create_window(width=1280, height=720,visible=True)
+    # vis.create_window(width=1280, height=720,visible=False)
     render_opt = vis.get_render_option().mesh_show_back_face=True
 
-    # scene_name = 'BasementSittingBooth'
     ## read scene mesh from file
     point_cloud=fitting_dir+'meshed-poisson.ply'
     scene = o3d.io.read_point_cloud(osp.join(point_cloud))
     vis.add_geometry(scene)
     vis.update_geometry(scene)
-    print(flag)
-    
-    ## dumb trans for dry run
 
-    ## read cam trans from file
+    ## read cam pose from file
     lines = [line.rstrip('\n') for line in open(fitting_dir+'camerapose.txt')]
-
     items = lines[0].split(' ')
-
     qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
     tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
     romat = qvec2rotmat(qvec)
@@ -112,49 +88,31 @@ def main(fitting_dir,flag, num):
 
     world_trans = np.eye(4)
     world_trans[0:3, 0:3] =romat
-    world_trans[:3, 3] = tvec
-    world_trans = inv(world_trans)
-    # print(lines)
-    # print(trans)
+    world_trans[:3, 3] = tvec 
+    world_trans = inv(world_trans) # from camera to world
+
+    # placeholder for body mesh
     body = o3d.geometry.TriangleMesh()
     vis.add_geometry(body)
 
-    # cv2.namedWindow('frame')
-
-    if flag == 'True':
-        out = 'moving_render'
-        print('moving camrea')
-    else:
-        out = 'render'+num
-        print('fixed camera')
-
+    # output directory
+    out = 'render'+num
     outrenderfolder = fitting_dir+out
     if not os.path.exists(outrenderfolder):
         os.makedirs(outrenderfolder)
 
     count = 0
     for img_name in sorted(glob.glob(os.path.join(fitting_dir, 'smoothed_body'+num+'/*.pkl'))):
-    # for img_name in sorted(glob.glob((fitting_dir+ 'body_gen/results/*/*.pkl'))):
         print('viz frame {}'.format(img_name))
 
         imgid = int(img_name.split('\\')[-1].replace('.pkl','').replace('body_gen_',''))
+
+        # get camera position (only for camera trajectory vis)
         items = lines[count].split(' ')
-        # # img_name = '/home/miao/data/rylm/segmented_data/miao_mainbuilding_0-1/smoothed_body/body_gen_000299.pkl'
-        # qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
         tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
-        # romat = qvec2rotmat(qvec)
-        # body_trans = np.eye(4)
-        # body_trans[:3, 3] = tvec
-        # body_trans[0:3, 0:3] =romat
-        # body_trans = inv(body_trans)
-        # print(body_trans)
-        if flag == 'True':
-            # print('moving camera')
-            world_trans=body_trans
-        # print(body_trans)
+        
         with open(img_name, 'rb') as f:
             param = pickle.load(f)
-            # print(param)
             if count==0:
                 shape= param['betas']
             pose_embedding= param['body_pose']
@@ -162,14 +120,12 @@ def main(fitting_dir,flag, num):
             scale = param['scale']
         
             body_trans =  param['camera_ext']
-        # print(body_trans)
+        
         camera_pose = np.eye(4)
         camera_transl = camera_transl.squeeze()
-        # camera_transl[0] *=-1.0
         camera_pose[:3, 3] = camera_transl*scale
-        # print(inv(camera_pose))
         body_trans = np.matmul(body_trans,(camera_pose))
-        # print(camera_transl)
+
         pose_embedding = torch.tensor(pose_embedding, dtype=torch.float32)
         body_pose = vposer.decode(pose_embedding,output_type='aa').view(1, -1) 
         body_dict={}
@@ -181,7 +137,8 @@ def main(fitting_dir,flag, num):
                 body_dict[key]=torch.tensor(param[key], dtype=torch.float32)
         body_dict['body_pose']=body_pose
         body_dict['betas'] = torch.tensor(shape, dtype=torch.float32)
-        # print(body_dict['betas'])
+
+        # update body mesh
         model_output = body_mesh_model(return_verts=True, **body_dict)
         body_verts_np = model_output.vertices.detach().cpu().numpy().squeeze()
         body_verts_np = body_verts_np*scale
@@ -193,12 +150,11 @@ def main(fitting_dir,flag, num):
         body.transform(body_trans)
         vis.update_geometry(body)
 
+        # add camera trajectory
         camera_pos = o3d.geometry.TriangleMesh.create_sphere(0.005)
         camera_pos.paint_uniform_color([1,0,0])
-        # camera_pos = o3d.geometry.TriangleMesh.create_coordinate_frame()
         camera_pos.translate(-tvec)
         vis.add_geometry(camera_pos)
-        # o3d.io.write_triangle_mesh(fitting_dir+'\\meshes\\'+str(imgid)+'.ply', body)
 
 
         ## update cam for render
@@ -218,13 +174,10 @@ def main(fitting_dir,flag, num):
         key = cv2.waitKey(100)
         count += 1
 
-        # break
-
 
 
 
 if __name__=='__main__':
     fitting_dir = sys.argv[1]
-    flag = sys.argv[2]
-    num = sys.argv[3]
-    main(fitting_dir,flag,num)
+    num = sys.argv[2]
+    main(fitting_dir, num)
