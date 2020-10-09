@@ -92,7 +92,7 @@ def main(fitting_dir,flag):
     point_cloud=fitting_dir+'meshed-poisson.ply'
     scene = o3d.io.read_point_cloud(osp.join(point_cloud))
     vis.add_geometry(scene)
-    vis.update_geometry()
+    vis.update_geometry(scene)
     print(flag)
     
     ## dumb trans for dry run
@@ -118,13 +118,22 @@ def main(fitting_dir,flag):
     body = o3d.geometry.TriangleMesh()
     vis.add_geometry(body)
 
+    camera_poses = []
+    for i in range(300):
+        camera_poses.append(o3d.geometry.TriangleMesh.create_sphere(0.05))
+        camera_poses[i].paint_uniform_color([1,0,0])
+        items = lines[i].split(' ')
+        tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
+        camera_poses[i].translate(-tvec)
+        vis.add_geometry(camera_poses[i])
+
     cv2.namedWindow('frame')
 
     if flag == 'True':
         out = 'moving_render'
         print('moving camrea')
     else:
-        out = 'render'
+        out = 'render'+num
         print('fixed camera')
 
     outrenderfolder = fitting_dir+out
@@ -132,11 +141,11 @@ def main(fitting_dir,flag):
         os.makedirs(outrenderfolder)
 
     count = 0
-    for img_name in sorted(glob.glob(os.path.join(fitting_dir, 'smoothed_body/*.pkl'))):
+    for img_name in sorted(glob.glob(os.path.join(fitting_dir, 'smoothed_body'+num+'/*.pkl'))):
     # for img_name in sorted(glob.glob((fitting_dir+ 'body_gen/results/*/*.pkl'))):
         print('viz frame {}'.format(img_name))
 
-        imgid = int(img_name.split('/')[-1].replace('.pkl','').replace('body_gen_',''))
+        imgid = int(img_name.split('\\')[-1].replace('.pkl','').replace('body_gen_',''))
         items = lines[count].split(' ')
         # img_name = '/home/miao/data/rylm/segmented_data/miao_mainbuilding_0-1/smoothed_body/body_gen_000299.pkl'
         qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
@@ -187,7 +196,7 @@ def main(fitting_dir,flag):
         body.triangle_normals = o3d.utility.Vector3dVector([])
         body.compute_vertex_normals()
         body.transform(body_trans)
-        vis.update_geometry()
+        vis.update_geometry(body)
 
 
         vis.run()
@@ -202,4 +211,5 @@ def main(fitting_dir,flag):
 if __name__=='__main__':
     fitting_dir = sys.argv[1]
     flag = sys.argv[2]
+    num = sys.argv[3]
     main(fitting_dir,flag)
