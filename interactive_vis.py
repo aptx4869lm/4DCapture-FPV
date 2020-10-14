@@ -119,12 +119,11 @@ def main(fitting_dir,flag):
     vis.add_geometry(body)
 
     camera_poses = []
+    ext_t = np.array([0, 5, 0])
     for i in range(300):
         camera_poses.append(o3d.geometry.TriangleMesh.create_sphere(0.05))
         camera_poses[i].paint_uniform_color([1,0,0])
-        items = lines[i].split(' ')
-        tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
-        camera_poses[i].translate(-tvec)
+        camera_poses[i].translate(ext_t)
         vis.add_geometry(camera_poses[i])
 
     cv2.namedWindow('frame')
@@ -198,6 +197,8 @@ def main(fitting_dir,flag):
         body.transform(body_trans)
         vis.update_geometry(body)
 
+        camera_poses[count].translate(-ext_t-tvec)
+        vis.update_geometry(camera_poses[count])
 
         vis.run()
 
