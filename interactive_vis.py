@@ -197,7 +197,8 @@ def main(fitting_dir,flag):
         body.transform(body_trans)
         vis.update_geometry(body)
 
-        camera_poses[count].translate(-ext_t-tvec)
+        camera_t = np.linalg.solve(romat, -tvec)
+        camera_poses[count].translate(-ext_t+camera_t)
         vis.update_geometry(camera_poses[count])
 
         vis.run()
