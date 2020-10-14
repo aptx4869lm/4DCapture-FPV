@@ -109,7 +109,9 @@ def main(fitting_dir, num):
 
         # get camera position (only for camera trajectory vis)
         items = lines[count].split(' ')
+        qvec = np.array([float(items[1]),float(items[2]),float(items[3]),float(items[4])])
         tvec = np.array([float(items[5]),float(items[6]),float(items[7])])
+        romat = qvec2rotmat(qvec)
         
         with open(img_name, 'rb') as f:
             param = pickle.load(f)
@@ -153,7 +155,8 @@ def main(fitting_dir, num):
         # add camera trajectory
         camera_pos = o3d.geometry.TriangleMesh.create_sphere(0.005)
         camera_pos.paint_uniform_color([1,0,0])
-        camera_pos.translate(-tvec)
+        camera_t = np.linalg.solve(romat, -tvec)
+        camera_pos.translate(camera_t)
         vis.add_geometry(camera_pos)
 
 
