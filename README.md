@@ -12,7 +12,6 @@ python3 smplifyx/main.py --config cfg_files/fit_smplx.yaml  --data_folder /home/
 
 Step 4: Run Colmap for to generate scene mesh and camera trajectory. This step make take up to several hours depneding on the complexity of the scene. Then Run utils/camerpose_helper and utils/pointscloud_helper.py to generate desired points cloud file and camera pose.
 
-TODO: Add keyboard input to helper scripts. Add example shell file for running smplify-x model.
 
 ## Joint Optimization with 3D Scene Context:
 Run global_optimization.py to conduct temproal smoothing and enforce human-scene constraints:
@@ -26,7 +25,7 @@ The resulting data should be organized as following:
     - images: folder that contains all video frames
     - keypoints: folder that contains all body keypoints
     - body_gen: folder that contains all body mesh files:
-    - smoothed_boyd: folder that contains all temporal-smoothed body mesh files:
+    - smoothed_boyd: folder that contains all jointly-optimized body mesh files:
     - camera_pose.txt: text file that contains camera pose at each temporal footprint
     - meshed-poisson.ply: scene mesh file from dense reconstruction
     - camera.txt: text file that contains camera parameters
@@ -42,12 +41,6 @@ python3 global_vis.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding
 Run vis.py to view recosntrcuted body mesh on image plane.
 ```shell
 python3 vis.py '/home/miao/data/rylm/segmented_data/miao_mainbuilding_0-1/'
-```
-TODO: an interactive open3d viewer for debugging. Using calibrated camera parameters to re-run everything.
-## Pack Video Outputs:
-Run pack_videosoutputs.py to generate video outputs.
-```shell
-python3 pack_videosoutputs.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding_0-1/' 'render'
 ```
 
 ## Citation
