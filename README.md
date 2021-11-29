@@ -3,7 +3,8 @@
 
 ## Installation:
 Our method requires the same dependencies as SMPLify-X and OpenPose. We refer to the official implementation fo [SMPLify-X](https://aptx4869lm.github.io/4DEgocentricBodyCapture/) and [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose) for installation details.
-Our method also needs the installation [Chamfer Pytorch](https://github.com/ThibaultGROUEIX/ChamferDistancePytorch/tree/719b0f1ca5ba370616cb837c03ab88d9a88173ff) to calculate the chamfer distnace for enforceing human-scene constraints
+
+Our method also needs the installation of [Chamfer Pytorch](https://github.com/ThibaultGROUEIX/ChamferDistancePytorch/tree/719b0f1ca5ba370616cb837c03ab88d9a88173ff) to calculate the chamfer distnace for enforceing human-scene constraints
 
 ## Data Preparation:
 Step 1: Dump video frames with desired fps (30) with utils/dump_videos.py. Run utils/split_frames to segment videos into equally long subatom clips.  Repack frames to videos with utils/pack_videos.py (This is for faster openpose I/O).
