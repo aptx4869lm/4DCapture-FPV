@@ -1,6 +1,10 @@
 # 4D Human Body Capture from Egocentric Video via 3D Scene Grounding
 [[Project]](https://aptx4869lm.github.io/4DEgocentricBodyCapture/) [[Paper]](https://arxiv.org/pdf/2011.13341.pdf)
 
+## Installation:
+Our method requires the same dependencies as SMPLify-X and OpenPose. We refer to the official implementation fo [SMPLify-X](https://aptx4869lm.github.io/4DEgocentricBodyCapture/) and [OpenPose](https://github.com/CMU-Perceptual-Computing-Lab/openpose) for installation details.
+
+
 ## Data Preparation:
 Step 1: Dump video frames with desired fps (30) with utils/dump_videos.py. Run utils/split_frames to segment videos into equally long subatom clips.  Repack frames to videos with utils/pack_videos.py (This is for faster openpose I/O).
 
