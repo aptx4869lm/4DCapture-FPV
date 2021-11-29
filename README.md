@@ -1,4 +1,4 @@
-# (RYLM) Read You Like a "Mesh":Interactive Body Capture in First Person Video
+# 4D Human Body Capture from Egocentric Video via 3D Scene Grounding
 
 ## Data Preparation:
 Step 0: The original video is names as "people_place_ID" (e.g.g miao_mainbuilding_0) 
@@ -50,4 +50,15 @@ TODO: an interactive open3d viewer for debugging. Using calibrated camera parame
 Run pack_videosoutputs.py to generate video outputs.
 ```shell
 python3 pack_videosoutputs.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding_0-1/' 'render'
+```
+
+## Citation
+If you find our code useful in your research, please use the following BibTeX entry for citation.
+```BibTeX
+@inproceedings{liu20204d,
+  title={4D Human Body Capture from Egocentric Video via 3D Scene Grounding},
+  author={Liu, Miao and Yang, Dexin and Zhang, Yan and Cui, Zhaopeng and Rehg, James M and Tang, Siyu},
+  booktitle={3DV},
+  year={2021}
+}
 ```
