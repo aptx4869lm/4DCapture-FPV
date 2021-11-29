@@ -15,7 +15,7 @@ Step 4: Run Colmap for to generate scene mesh and camera trajectory. This step m
 TODO: Add keyboard input to helper scripts. Add example shell file for running smplify-x model.
 
 ## Joint Optimization with 3D Scene Context:
-Runn global_optimization.py to conduct temproal smoothing on smplify-x outputs:
+Run global_optimization.py to conduct temproal smoothing and enforce human-scene constraints:
 ```shell
 python3 global_optimization.py '/home/miao/data/rylm/packed_data/miao_mainbuidling_0-1/body_gen' '/home/miao/data/rylm/packed_data/miao_mainbuidling_0-1/smoothed_body
 ```
