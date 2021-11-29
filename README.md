@@ -1,8 +1,6 @@
-# (RYLM) Read You Like a "Mesh":Interactive Body Capture in First Person Video
+# 4D Human Body Capture from Egocentric Video via 3D Scene Grounding
 
 ## Data Preparation:
-Step 0: The original video is names as "people_place_ID" (e.g.g miao_mainbuilding_0) 
-
 Step 1: Dump video frames with desired fps (30) with utils/dump_videos.py. Run utils/split_frames to segment videos into equally long subatom clips.  Repack frames to videos with utils/pack_videos.py (This is for faster openpose I/O).
 
 Step 2: Run openpose_call.py under openpose folder to get human body keypoints, then run utils/openpose_helper to rename keypoint.json and run utils/openpose_filter.py to keep the most confident human keypoints.
@@ -16,7 +14,7 @@ Step 4: Run Colmap for to generate scene mesh and camera trajectory. This step m
 
 TODO: Add keyboard input to helper scripts. Add example shell file for running smplify-x model.
 
-## Temporal Smoothing:
+## Joint Optimization with 3D Scene Context:
 Runn global_optimization.py to conduct temproal smoothing on smplify-x outputs:
 ```shell
 python3 global_optimization.py '/home/miao/data/rylm/packed_data/miao_mainbuidling_0-1/body_gen' '/home/miao/data/rylm/packed_data/miao_mainbuidling_0-1/smoothed_body
@@ -34,13 +32,13 @@ The resulting data should be organized as following:
     - camera.txt: text file that contains camera parameters
     - xyz.ply point cloud file. (use meash lab to convert .xyz file to .ply file)
 
-## Global Transformation:
+## Visualization in the World Coordinate:
 Run global_vis.py to transform the body mesh in pivot coordinate to world coordinate. By default the viewpoint of open3d is the initial position camera trajectory. Setting bool flag to 'True' will resulting into a open3d viewpoint moving the same way as camera viewer.
 ```shell
 python3 global_vis.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding_0-1/' False
 ```
 
-## Image Coordinate Visulization:
+## Visualization in the Egocentric Coordinate:
 Run vis.py to view recosntrcuted body mesh on image plane.
 ```shell
 python3 vis.py '/home/miao/data/rylm/segmented_data/miao_mainbuilding_0-1/'
@@ -50,4 +48,15 @@ TODO: an interactive open3d viewer for debugging. Using calibrated camera parame
 Run pack_videosoutputs.py to generate video outputs.
 ```shell
 python3 pack_videosoutputs.py '/home/miao/data/rylm/downsampled_frames/miao_mainbuilding_0-1/' 'render'
+```
+
+## Citation
+If you find our code useful in your research, please use the following BibTeX entry for citation.
+```BibTeX
+@inproceedings{liu20204d,
+  title={4D Human Body Capture from Egocentric Video via 3D Scene Grounding},
+  author={Liu, Miao and Yang, Dexin and Zhang, Yan and Cui, Zhaopeng and Rehg, James M and Tang, Siyu},
+  booktitle={3DV},
+  year={2021}
+}
 ```
